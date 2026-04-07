@@ -13,7 +13,6 @@ import time
 
 import requests
 import yt_dlp
-from PyQt6 import QtCore, QtGui
 
 from utils import (
     format_filesize,
@@ -306,10 +305,7 @@ def _download_direct(url, folder, progress_cb=None, size_cb=None, cancelled_cb=N
     return out_path
 
 
-class MetadataWorker(QtCore.QThread):
-    metadata_signal = QtCore.pyqtSignal(dict)
-    error_signal = QtCore.pyqtSignal(str)
-
+class MetadataWorker:
     def __init__(self, url, parent=None):
         super().__init__(parent)
         self.url = url
@@ -354,9 +350,6 @@ class MetadataWorker(QtCore.QThread):
             try:
                 response = requests.get(thumb_url, timeout=1.2)
                 image_data = response.content
-                image = QtGui.QImage()
-                image.loadFromData(image_data)
-                pixmap = QtGui.QPixmap.fromImage(image)
             except Exception:
                 pixmap = None
         self.metadata_signal.emit(
@@ -364,14 +357,7 @@ class MetadataWorker(QtCore.QThread):
         )
 
 
-class DownloadWorker(QtCore.QThread):
-    progress_signal = QtCore.pyqtSignal(float, str)
-    finished_signal = QtCore.pyqtSignal()
-    error_signal = QtCore.pyqtSignal(str)
-    title_signal = QtCore.pyqtSignal(str)
-    size_signal = QtCore.pyqtSignal(str)
-    stats_signal = QtCore.pyqtSignal(str, str)  # (speed_str, eta_str)
-
+class DownloadWorker:
     def __init__(
         self,
         url,
