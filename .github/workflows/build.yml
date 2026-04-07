@@ -60,7 +60,7 @@ jobs:
           cli.py
 
       - name: Zip portable output
-        run: Compress-Archive -Path "dist\Video Downloader" -DestinationPath "Windows_x64-portable.zip"
+        run: Compress-Archive -Path "dist\vid-dl" -DestinationPath "Windows_x64-portable.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -126,9 +126,9 @@ jobs:
       - name: Zip portable output
         run: |
           mkdir -p zip_out
-          cp -r "dist/Video Downloader" "zip_out/Video Downloader"
+          cp -r "dist/vid-dl" "zip_out/vid-dl"
           cd zip_out
-          zip -r "../Linux_x64-portable.zip" "Video Downloader"
+          zip -r "../Linux_x64-portable.zip" "vid-dl"
 
       - name: Upload plain Linux dir
         uses: actions/upload-artifact@v4
@@ -186,7 +186,7 @@ jobs:
       - name: Zip portable output (ditto)
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/Video Downloader.app" \
+            "dist/vid-dl.app" \
             "macOS_universal2-portable.zip"
 
       - uses: actions/upload-artifact@v4
