@@ -1,0 +1,3 @@
+requests
+yt-dlp
+pycryptodomex #for hls downloads
