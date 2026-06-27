@@ -11,8 +11,11 @@ import shutil
 import sys
 import time
 
-import requests
 import yt_dlp
+try:
+    from curl_cffi import requests as _cffi_requests
+except ImportError:
+    _cffi_requests = None
 
 from utils import (
     format_filesize,
@@ -20,6 +23,10 @@ from utils import (
     get_videasy_headers,
     sanitize_filename,
 )
+
+# Impersonation target used for our own HTTP requests (thumbnails, direct downloads).
+# curl_cffi handles the TLS fingerprinting so Cloudflare doesn't block us.
+_CF_IMPERSONATE = "chrome136"
 
 
 class YTDLPLogger:
@@ -46,7 +53,7 @@ class YTDLPLogger:
         if self._is_progress(msg):
             parts = [p for p in msg.split("\r") if p != ""]
             current = parts[-1] if parts else msg
-            # ensure we don't output a trailing newline — use '\r' to overwrite same line
+            # ensure we don't output a trailing newline, use '\r' to overwrite same line
             out = current.rstrip("\n")
             if not out.endswith("\r"):
                 out = out + "\r"
@@ -89,12 +96,21 @@ class YTDLPLogger:
 
 
 def build_ydl_opts(
-    fmt, video_quality, audio_bitrate, net_config, download_playlist=False
+    fmt,
+    video_quality,
+    audio_bitrate,
+    net_config,
+    download_playlist=False,
+    deno_path: str = "",
 ):
     """
     Stateless builder for yt-dlp options that mirrors DownloadWorker._build_base_opts logic.
     Returned dict intentionally does not set 'progress_hooks' (caller attaches it) but does set
     format/merge/postprocessor options.
+
+    deno_path: full path to a Deno executable. When provided, yt-dlp's js_runtimes option
+               is set so Deno is used for signature/nsig solving, unlocking all YouTube formats.
+               Without it yt-dlp still works but may miss some formats on YouTube.
     """
     ydl_opts = {
         "abort_on_error": False,
@@ -117,7 +133,27 @@ def build_ydl_opts(
         "noplaylist": not download_playlist,
         "cachedir": False,
         "logger": None,
+        # Tell the generic extractor to impersonate a browser when it hits a
+        # Cloudflare anti-bot 403. Equivalent to --extractor-args "generic:impersonate".
+        # Only affects the generic extractor; YouTube and others are not impacted.
+        "extractor_args": {
+            "generic": {"impersonate": ["chrome"]},
+        },
+        # Send Videasy-compatible headers on all requests, including ffmpeg segment downloads.
+        # http_headers is forwarded to ffmpeg via -headers, so these must be set explicitly.
+        "http_headers": get_videasy_headers(),
+        # Enable Deno as JS runtime (searches PATH by default).
+        # yt-dlp needs this for YouTube signature/nsig solving to get all formats.
+        # If a specific path is configured it will be set below.
+        "js_runtimes": {"deno": {}},
+        # Allow yt-dlp to fetch the EJS challenge-solver script from GitHub.
+        # Without this Deno finds no solver script and signature solving fails.
+        "remote_components": ["ejs:github"],
     }
+
+    # If a specific Deno binary is configured, tell yt-dlp exactly where it is.
+    if deno_path and os.path.isfile(deno_path):
+        ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
     if fmt in ["mp4 (with Audio)", "avi", "mkv"]:
         if video_quality == "best":
@@ -209,17 +245,15 @@ def _download_direct(url, folder, progress_cb=None, size_cb=None, cancelled_cb=N
     extension, causing its internal safety check to abort.  We bypass yt-dlp entirely:
       1. HEAD the URL to get the Content-Disposition filename (if available).
       2. Run ffmpeg -i <url> -c copy output.mp4, parsing stderr for progress updates.
-
-    progress_cb(percent: float, status: str) — called on every ffmpeg progress line
-    size_cb(size_str: str)                   — called with human-readable download size
-    Returns the output path on success, raises on failure.
     """
     import re
     import subprocess
     import urllib.parse
 
     # --- resolve final URL (follow redirects with HEAD) ---
-    head = requests.head(url, allow_redirects=True, timeout=15)
+    head = requests.head(
+        url, allow_redirects=True, timeout=15, impersonate=_CF_IMPERSONATE
+    )
     final_url = head.url
 
     # --- determine output filename ---
@@ -305,343 +339,3 @@ def _download_direct(url, folder, progress_cb=None, size_cb=None, cancelled_cb=N
     return out_path
 
 
-class MetadataWorker:
-    def __init__(self, url, parent=None):
-        super().__init__(parent)
-        self.url = url
-
-    def run(self):
-        # Base Options
-        ydl_opts = {
-            "skip_download": True,
-            "cachedir": False,
-            "logger": YTDLPLogger(),
-            "quiet": True,
-            "no_warnings": True,
-        }
-
-        def _extract(opts):
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                return ydl.extract_info(self.url, download=False)
-
-        try:
-            info = _extract(ydl_opts)
-        except Exception as e:
-            err_str = str(e).lower()
-            # on forbidden/403 -> try again with Videasy-Headers
-            if "403" in err_str or "forbidden" in err_str:
-                try:
-                    ydl_opts_with_headers = dict(ydl_opts)
-                    ydl_opts_with_headers["http_headers"] = get_videasy_headers()
-                    info = _extract(ydl_opts_with_headers)
-                except Exception as e2:
-                    self.error_signal.emit(friendly_error(str(e2)))
-                    return
-            else:
-                self.error_signal.emit(friendly_error(str(e)))
-                return
-
-        title = info.get("title", "")
-        thumb_url = info.get("thumbnail", "")
-        filesize = info.get("filesize") or info.get("filesize_approx")
-        filesize_str = format_filesize(filesize)
-        pixmap = None
-        if thumb_url:
-            try:
-                response = requests.get(thumb_url, timeout=1.2)
-                image_data = response.content
-            except Exception:
-                pixmap = None
-        self.metadata_signal.emit(
-            {"title": title, "thumbnail": pixmap, "filesize": filesize_str}
-        )
-
-
-class DownloadWorker:
-    def __init__(
-        self,
-        url,
-        folder,
-        fmt,
-        video_quality,
-        audio_bitrate,
-        net_config,
-        cached_metadata=None,
-        forced_outtmpl=None,
-        download_playlist=False,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self.url = url
-        self.folder = folder
-        self.fmt = fmt
-        self.video_quality = video_quality
-        self.audio_bitrate = audio_bitrate
-        self.net_config = net_config
-        self.cached_metadata = cached_metadata
-        self.forced_outtmpl = forced_outtmpl
-        self.download_playlist = download_playlist
-        self._paused = False
-        self._cancelled = False
-        self.current_outtmpl = None
-        self._used_videasy_headers = False
-
-    def progress_hook(self, d):
-        if self._cancelled:
-            raise Exception("Cancelled")
-        while self._paused:
-            time.sleep(0.2)
-        if d.get("status") == "downloading":
-            total = d.get("total_bytes") or d.get("total_bytes_estimate")
-            downloaded = d.get("downloaded_bytes", 0)
-            percent = (downloaded / total * 100) if total else 0
-            self.progress_signal.emit(percent, "Downloading")
-
-            # Speed
-            speed = d.get("speed")
-            if speed is None:
-                speed_str = "—"
-            elif speed >= 1024 * 1024:
-                speed_str = f"{speed / 1024 / 1024:.1f} MB/s"
-            else:
-                speed_str = f"{speed / 1024:.0f} KB/s"
-
-            # ETA
-            eta = d.get("eta")
-            if eta is None:
-                eta_str = "—"
-            elif eta >= 3600:
-                eta_str = f"{eta // 3600}h {(eta % 3600) // 60}m"
-            elif eta >= 60:
-                eta_str = f"{eta // 60}m {eta % 60}s"
-            else:
-                eta_str = f"{eta}s"
-
-            self.stats_signal.emit(speed_str, eta_str)
-        elif d.get("status") == "finished":
-            self.progress_signal.emit(100, "Finished")
-            self.stats_signal.emit("—", "—")
-
-    def pause(self):
-        self._paused = True
-
-    def resume(self):
-        self._paused = False
-
-    def cancel(self):
-        self._cancelled = True
-
-    def _build_base_opts(self):
-        ydl_opts = build_ydl_opts(
-            self.fmt,
-            self.video_quality,
-            self.audio_bitrate,
-            self.net_config,
-            download_playlist=self.download_playlist,
-        )
-        ydl_opts["progress_hooks"] = [self.progress_hook]
-        ydl_opts["logger"] = YTDLPLogger()
-        return ydl_opts
-
-    def _log_available_formats(self, info):
-        # Debug helper: print brief overview of available formats to help diagnosing "only audio" issues
-        try:
-            fmts = info.get("formats") or []
-            print("---- available formats (id, ext, vcodec, acodec, filesize) ----")
-            for f in fmts:
-                print(
-                    f"{f.get('format_id')} | {f.get('ext')} | v:{f.get('vcodec')} a:{f.get('acodec')} size:{f.get('filesize') or f.get('filesize_approx')}"
-                )
-            print("-------------------------------------------------------------")
-        except Exception:
-            pass
-
-    def run(self):
-        # --- SharePoint / direct-download bypass ---
-        # yt-dlp cannot handle URLs whose path ends with .aspx because its internal
-        # safety check rejects the "unusual extension", even when the server sends a
-        # proper video file.  We detect these URLs early and stream them straight
-        # through ffmpeg, completely bypassing yt-dlp.
-        if _is_direct_download_url(self.url):
-            try:
-                out = _download_direct(
-                    self.url,
-                    self.folder,
-                    progress_cb=self.progress_signal.emit,
-                    size_cb=self.size_signal.emit,
-                    cancelled_cb=lambda: self._cancelled,
-                )
-                self.title_signal.emit(os.path.basename(out))
-                self.finished_signal.emit()
-            except Exception as e:
-                self.error_signal.emit(friendly_error(str(e)))
-            return  # done – skip all yt-dlp logic below
-
-        ydl_opts = self._build_base_opts()
-
-        # If forced_outtmpl is provided, use it directly
-        if self.forced_outtmpl:
-            ydl_opts["outtmpl"] = self.forced_outtmpl
-            self.current_outtmpl = self.forced_outtmpl
-            # If forced_outtmpl lacks an extension we keep ext detection to fallback later;
-            # but assume user provided the intended filename.
-        # Otherwise fall back to metadata/title-based outtmpl later
-
-        metadata = None
-        if self.cached_metadata:
-            metadata = self.cached_metadata
-            title = metadata.get("title", self.url)
-            if not self.forced_outtmpl:
-                ext = "mp4"
-                safe_title = sanitize_filename(title)
-                ydl_opts["outtmpl"] = os.path.join(self.folder, f"{safe_title}.%(ext)s")
-                self.current_outtmpl = os.path.join(self.folder, f"{safe_title}.{ext}")
-            self.title_signal.emit(title)
-            filesize_str = metadata.get("filesize", "Unknown")
-            self.size_signal.emit(filesize_str)
-        else:
-            # Need to extract info (try without special header, retry with headers on 403)
-            try:
-                if "outtmpl" not in ydl_opts:
-                    ydl_opts["outtmpl"] = os.path.join(self.folder, "%(title)s.%(ext)s")
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(self.url, download=False)
-                # Log available formats to help debugging
-                self._log_available_formats(info)
-
-                # If no video formats are present, try again with videasy headers (if not tried yet)
-                formats = info.get("formats") or []
-                has_video = any(
-                    (f.get("vcodec") and f.get("vcodec") != "none") for f in formats
-                )
-                if not has_video and not self._used_videasy_headers:
-                    try:
-                        ydl_opts_with_headers = dict(ydl_opts)
-                        ydl_opts_with_headers["http_headers"] = get_videasy_headers()
-                        with yt_dlp.YoutubeDL(ydl_opts_with_headers) as ydl:
-                            info2 = ydl.extract_info(self.url, download=False)
-                        info = info2
-                        self._used_videasy_headers = True
-                        self._log_available_formats(info)
-                        formats = info.get("formats") or []
-                        has_video = any(
-                            (f.get("vcodec") and f.get("vcodec") != "none")
-                            for f in formats
-                        )
-                        if has_video:
-                            ydl_opts = ydl_opts_with_headers
-                    except Exception:
-                        # ignore here; we'll handle lack of video downstream
-                        pass
-
-                title = info.get("title", self.url)
-                self.title_signal.emit(title)
-                ext = info.get("ext", "mp4")
-                if not self.forced_outtmpl:
-                    safe_title = sanitize_filename(title)
-                    self.current_outtmpl = os.path.join(
-                        self.folder, f"{safe_title}.{ext}"
-                    )
-                    ydl_opts["outtmpl"] = os.path.join(
-                        self.folder, f"{safe_title}.%(ext)s"
-                    )
-                else:
-                    # forced_outtmpl already set above
-                    pass
-
-                # If no video streams found at all, fall back to downloading the 'best' single-file format (if available)
-                if not has_video:
-                    print(
-                        "[debug] No video codecs detected in formats -> falling back to 'best' single-file format (if available)."
-                    )
-                    ydl_opts["format"] = "best"
-                    # remove merge options because we're downloading single file
-                    ydl_opts.pop("merge_output_format", None)
-                    ydl_opts.pop("postprocessor_args", None)
-
-                filesize = info.get("filesize") or info.get("filesize_approx")
-                filesize_str = format_filesize(filesize)
-                self.size_signal.emit(filesize_str)
-            except Exception as e:
-                err_str = str(e).lower()
-                # On 403/forbidden -> retry with Videasy-Headers
-                if "403" in err_str or "forbidden" in err_str:
-                    try:
-                        ydl_opts_with_headers = dict(ydl_opts)
-                        ydl_opts_with_headers["http_headers"] = get_videasy_headers()
-                        with yt_dlp.YoutubeDL(ydl_opts_with_headers) as ydl:
-                            info = ydl.extract_info(self.url, download=False)
-                        self._used_videasy_headers = True
-                        # Log formats and set outtmpl as above
-                        self._log_available_formats(info)
-                        title = info.get("title", self.url)
-                        self.title_signal.emit(title)
-                        ext = info.get("ext", "mp4")
-                        if not self.forced_outtmpl:
-                            safe_title = sanitize_filename(title)
-                            self.current_outtmpl = os.path.join(
-                                self.folder, f"{safe_title}.{ext}"
-                            )
-                            ydl_opts = ydl_opts_with_headers
-                            ydl_opts["outtmpl"] = os.path.join(
-                                self.folder, f"{safe_title}.%(ext)s"
-                            )
-                        else:
-                            ydl_opts = ydl_opts_with_headers
-                        filesize = info.get("filesize") or info.get("filesize_approx")
-                        filesize_str = format_filesize(filesize)
-                        # Additional check: if still no video, fall back to 'best'
-                        formats = info.get("formats") or []
-                        has_video = any(
-                            (f.get("vcodec") and f.get("vcodec") != "none")
-                            for f in formats
-                        )
-                        if not has_video:
-                            print(
-                                "[debug] After headers: still no video detected -> falling back to 'best' format"
-                            )
-                            ydl_opts["format"] = "best"
-                            ydl_opts.pop("merge_output_format", None)
-                            ydl_opts.pop("postprocessor_args", None)
-                        self.size_signal.emit(filesize_str)
-                    except Exception as e2:
-                        self.error_signal.emit(friendly_error(str(e2)))
-                        return
-                else:
-                    self.error_signal.emit(friendly_error(str(e)))
-                    return
-
-        # Now perform download (with possible retry on 403 during download)
-        # DEBUG: print chosen format and whether ffmpeg is available
-        print("[debug] Final ydl_opts format=", ydl_opts.get("format"))
-        print("[debug] ffmpeg available=", _ffmpeg_available())
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([self.url])
-            self.finished_signal.emit()
-        except Exception as e:
-            err_str = str(e).lower()
-            # If we haven't yet used videasy headers and encounter 403, retry once with headers
-            if (not self._used_videasy_headers) and (
-                "403" in err_str or "forbidden" in err_str
-            ):
-                try:
-                    ydl_opts_with_headers = dict(ydl_opts)
-                    ydl_opts_with_headers["http_headers"] = get_videasy_headers()
-                    with yt_dlp.YoutubeDL(ydl_opts_with_headers) as ydl:
-                        ydl.download([self.url])
-                    self.finished_signal.emit()
-                    return
-                except Exception as e2:
-                    e = e2  # fallthrough to error handling below
-
-            # cleanup partially downloaded files
-            if self.current_outtmpl:
-                for fname in [self.current_outtmpl, self.current_outtmpl + ".part"]:
-                    if os.path.exists(fname):
-                        try:
-                            os.remove(fname)
-                        except Exception:
-                            pass
-            self.error_signal.emit(friendly_error(str(e)))

@@ -1,2 +1,2 @@
 yt-dlp[default,curl-cffi]
-pycryptodomex #for hls downloads
+pycryptodomex

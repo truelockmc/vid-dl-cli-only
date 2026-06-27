@@ -170,8 +170,8 @@ def patch_workers(src: str) -> str:
 # ---------------------------------------------------------------------------
 
 REQUIREMENTS = textwrap.dedent("""\
-    yt-dlp>=2024.1.1
-    curl_cffi>=0.6
+    yt-dlp[default,curl-cffi]
+    pycryptodomex
 """)
 
 
