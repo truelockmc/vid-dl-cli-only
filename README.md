@@ -3,6 +3,9 @@
 [![Issues Badge](https://img.shields.io/github/issues/truelockmc/vid-dl-cli-only?style=for-the-badge)](https://github.com/truelockmc/vid-dl-cli-only/issues)
 [![Closed Issues Badge](https://img.shields.io/github/issues-closed/truelockmc/vid-dl-cli-only?color=%238256d0&style=for-the-badge)](https://github.com/truelockmc/vid-dl-cli-only/issues?q=is%3Aissue+is%3Aclosed)<br>
 
+[![GitHub](https://img.shields.io/badge/GitHub-truelockmc%2Fvid_dl_cli_only-181717?style=for-the-badge&logo=github)](https://github.com/truelockmc/vid-dl-cli-only)
+[![Codeberg](https://img.shields.io/badge/Codeberg-truelockmc%2Fvid_cli_only-2185D0?style=for-the-badge&logo=codeberg)](https://codeberg.org/truelockmc/vid-dl-cli-only)
+
 
 # [truelockmc Video Downloader](https://github.com/truelockmc/video-downloader) CLI-only Builds
 
