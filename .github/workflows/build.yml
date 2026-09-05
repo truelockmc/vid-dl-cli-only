@@ -142,7 +142,7 @@ jobs:
 
   # ────────────────────────────────────────────────────────────
   # curl_cffi ships only single-arch wheels on PyPI (no universal2 fat binary),
-  # so we build two separate .app bundles instead of one universal2 binary.
+  # so we build two separate onedir bundles instead of one universal2 binary.
   build-mac-arm64:
     name: Build, macOS Apple Silicon (arm64)
     runs-on: macos-latest
@@ -176,7 +176,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt pyinstaller pillow
 
-      - name: Build .app bundle (arm64)
+      - name: Build (arm64)
         run: |
           python -m PyInstaller \
             --noconfirm --onedir --clean --noupx \
@@ -190,7 +190,7 @@ jobs:
       - name: Zip portable output (ditto)
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/vid-dl.app" \
+            "dist/vid-dl" \
             "macOS_arm64-portable.zip"
 
       - uses: actions/upload-artifact@v4
@@ -232,7 +232,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt pyinstaller pillow
 
-      - name: Build .app bundle (x86_64)
+      - name: Build (x86_64)
         run: |
           python -m PyInstaller \
             --noconfirm --onedir --clean --noupx \
@@ -246,7 +246,7 @@ jobs:
       - name: Zip portable output (ditto)
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/vid-dl.app" \
+            "dist/vid-dl" \
             "macOS_x86_64-portable.zip"
 
       - uses: actions/upload-artifact@v4

@@ -1,3 +1,9 @@
 
 download_config.ini
 *.pyc
+.venv/
+build/
+dist/
+*.spec
+.DS_Store
+*-portable.zip

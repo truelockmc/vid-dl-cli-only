@@ -1,9 +1,22 @@
-win:
-python -m PyInstaller --noconfirm --onedir --windowed --clean --noupx --icon=icon.png --exclude-module pycryptodomex.selftest --exclude-module pycryptodomex.tests --name "vid-dl" cli.py
+Note: do NOT pass --windowed. This is a CLI app -- on Windows it strips the
+console (no output at all) and on macOS it produces a .app bundle that cannot
+print to a terminal. Plain --onedir gives the desired layout:
 
-linux:
-python -m PyInstaller --noconfirm --onedir --clean --windowed --noupx \
+    dist/vid-dl/
+    ├── vid-dl(.exe)   <- the binary
+    └── _internal/     <- Python runtime + deps
+
+win:
+python -m PyInstaller --noconfirm --onedir --clean --noupx --icon=icon.png --exclude-module pycryptodomex.selftest --exclude-module pycryptodomex.tests --name "vid-dl" cli.py
+
+linux / macOS:
+python -m PyInstaller --noconfirm --onedir --clean --noupx \
   --icon=icon.png \
   --exclude-module pycryptodomex.selftest \
   --exclude-module pycryptodomex.tests \
   --name "vid-dl" cli.py
+
+Archive the portable output:
+  win:   Compress-Archive -Path "dist\vid-dl" -DestinationPath "Windows_x64-portable.zip"
+  linux: cd dist && zip -r ../Linux_x64-portable.zip vid-dl
+  mac:   ditto -c -k --sequesterRsrc --keepParent dist/vid-dl macOS_arm64-portable.zip
