@@ -19,8 +19,12 @@ except ImportError:
 
 from utils import (
     format_filesize,
+    FALLBACK_USER_AGENTS,
+    REFERER_DOMAINS,
     friendly_error,
-    get_videasy_headers,
+    get_base_headers,
+    get_domain_headers,
+    is_forbidden_error,
     sanitize_filename,
 )
 
@@ -139,9 +143,10 @@ def build_ydl_opts(
         "extractor_args": {
             "generic": {"impersonate": ["chrome"]},
         },
-        # Send Videasy-compatible headers on all requests, including ffmpeg segment downloads.
+        # Send browser-like headers on all requests, including ffmpeg segment downloads.
         # http_headers is forwarded to ffmpeg via -headers, so these must be set explicitly.
-        "http_headers": get_videasy_headers(),
+        # On 403, run_with_header_fallback() retries with Origin/Referer from REFERER_DOMAINS.
+        "http_headers": get_base_headers(),
         # Enable Deno as JS runtime (searches PATH by default).
         # yt-dlp needs this for YouTube signature/nsig solving to get all formats.
         # If a specific path is configured it will be set below.
@@ -194,6 +199,48 @@ def build_ydl_opts(
         ydl_opts["merge_output_format"] = "mp4"
         ydl_opts["postprocessor_args"] = ["-c", "copy"]
     return ydl_opts
+
+
+def run_with_header_fallback(
+    action, ydl_opts, preferred_headers=None, cancelled_cb=None
+):
+    """
+    Run action(opts) and, if it fails with a 403, retry it once per entry of
+    REFERER_DOMAINS using that domain as Origin and Referer, and again for each
+    FALLBACK_USER_AGENTS entry combined with that domain.
+    """
+    base_headers = dict(ydl_opts.get("http_headers") or get_base_headers())
+
+    attempts = []  # list of (label, headers), duplicates skipped
+
+    def _add(label, headers):
+        if all(headers != h for _, h in attempts):
+            attempts.append((label, headers))
+
+    if preferred_headers:
+        _add("previously working headers", dict(preferred_headers))
+    _add("default headers", base_headers)
+    for domain in REFERER_DOMAINS:
+        _add(domain, get_domain_headers(domain, base_headers))
+        for ua in FALLBACK_USER_AGENTS:
+            _add(f"{domain} + UA '{ua[:40]}...'", get_domain_headers(domain, base_headers, ua))
+
+    last_exc = None
+    for idx, (label, headers) in enumerate(attempts):
+        if cancelled_cb and cancelled_cb():
+            raise Exception("Cancelled")
+        if idx > 0:
+            print(f"[headers] Retrying with {label} ...")
+        opts = dict(ydl_opts)
+        opts["http_headers"] = headers
+        try:
+            return action(opts), headers
+        except Exception as e:
+            if not is_forbidden_error(e):
+                raise
+            print(f"[headers] 403/forbidden with {label}")
+            last_exc = e
+    raise last_exc
 
 
 def _ffmpeg_available():
