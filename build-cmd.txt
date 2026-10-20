@@ -1,8 +1,8 @@
 win:
-python -m PyInstaller --noconfirm --onedir --windowed --clean --noupx --icon=icon.png --exclude-module pycryptodomex.selftest --exclude-module pycryptodomex.tests --name "vid-dl" cli.py
+python -m PyInstaller --noconfirm --onedir --clean --noupx --icon=icon.png --exclude-module pycryptodomex.selftest --exclude-module pycryptodomex.tests --name "vid-dl" cli.py
 
-linux:
-python -m PyInstaller --noconfirm --onedir --clean --windowed --noupx \
+linux/macOS:
+python -m PyInstaller --noconfirm --onedir --clean --noupx \
   --icon=icon.png \
   --exclude-module pycryptodomex.selftest \
   --exclude-module pycryptodomex.tests \
