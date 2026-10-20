@@ -190,7 +190,7 @@ jobs:
       - name: Zip portable output (ditto)
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/vid-dl.app" \
+            "dist/vid-dl" \
             "macOS_arm64-portable.zip"
 
       - uses: actions/upload-artifact@v4
@@ -246,7 +246,7 @@ jobs:
       - name: Zip portable output (ditto)
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/vid-dl.app" \
+            "dist/vid-dl" \
             "macOS_x86_64-portable.zip"
 
       - uses: actions/upload-artifact@v4
